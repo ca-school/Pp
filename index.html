@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini AI Face Attendance System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .scanning {
+            border: 4px solid #10B981;
+            box-shadow: 0 0 15px #10B981;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-6 font-sans">
+
+    <div class="max-w-5xl mx-auto space-y-6">
+        <!-- Header & API Setup -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-center gap-4 border border-gray-700">
+            <div>
+                <h1 class="text-2xl font-bold text-emerald-400">🤖 Gemini Face Attendance</h1>
+                <p class="text-sm text-gray-400">Local Storage + Live Gemini Vision API Check-in</p>
+            </div>
+            <div class="flex w-full md:w-auto gap-2">
+                <input type="password" id="apiKeyInput" placeholder="Paste Gemini API Key here..." 
+                    class="bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 w-full md:w-72 border border-gray-600">
+                <button onclick="saveApiKey()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg font-medium transition">
+                    Save Key
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Workspace -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Left Column: Camera & Controls -->
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col items-center">
+                <h2 class="text-lg font-semibold mb-4 self-start text-gray-200">📷 Live Camera Feed</h2>
+                
+                <div class="relative w-full max-w-md overflow-hidden rounded-xl bg-black aspect-video mb-4 border-2 border-gray-600" id="videoContainer">
+                    <video id="webcam" autoplay playsinline class="w-full h-full object-cover"></video>
+                    <div id="scanOverlay" class="hidden absolute inset-0 bg-emerald-500/10 flex items-center justify-center">
+                        <span class="bg-black/70 text-emerald-400 px-3 py-1 rounded-full text-sm animate-pulse">Scanning via Gemini...</span>
+                    </div>
+                </div>
+                <!-- Hidden Canvas for Image Capture -->
+                <canvas id="canvas" class="hidden"></canvas>
+
+                <!-- Status Box -->
+                <div id="statusBox" class="w-full bg-gray-700/50 p-3 rounded-lg text-center mb-6 text-sm text-amber-300 border border-gray-600">
+                    Waiting for action...
+                </div>
+
+                <!-- 1. Registration Section -->
+                <div class="w-full border-t border-gray-700 pt-4 mb-4">
+                    <h3 class="text-sm font-semibold text-gray-400 mb-2 uppercase">Step 1: Register Face</h3>
+                    <div class="flex gap-2">
+                        <input type="text" id="userNameInput" placeholder="Enter Full Name" 
+                            class="bg-gray-700 text-white px-4 py-2 rounded-lg flex-1 focus:outline-none border border-gray-600">
+                        <button onclick="registerFace()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-medium transition whitespace-nowrap">
+                            📸 Register
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 2. Attendance / Check-in Section -->
+                <div class="w-full border-t border-gray-700 pt-4">
+                    <h3 class="text-sm font-semibold text-gray-400 mb-2 uppercase">Step 2: Mark Attendance</h3>
+                    <div class="flex gap-2">
+                        <button onclick="checkInNow()" class="flex-1 bg-purple-600 hover:bg-purple-500 py-2.5 rounded-lg font-medium transition">
+                            ⚡ Manual Check-In
+                        </button>
+                        <button id="autoCheckInBtn" onclick="toggleAutoCheckIn()" class="flex-1 bg-gray-700 hover:bg-gray-600 border border-gray-500 py-2.5 rounded-lg font-medium transition">
+                            🔄 Start Auto Live Check-in
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2 text-center">*Auto Check-in har 8 second mein live photo check karega.</p>
+                </div>
+            </div>
+
+            <!-- Right Column: Logs & Registered Users -->
+            <div class="space-y-6">
+                
+                <!-- Attendance Log -->
+                <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 h-80 flex flex-col">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-semibold text-gray-200">📋 Attendance Log (Today)</h2>
+                        <button onclick="clearLogs()" class="text-xs text-red-400 hover:underline">Clear Logs</button>
+                    </div>
+                    <div class="overflow-y-auto flex-1 pr-2 space-y-2" id="attendanceList">
+                        <!-- Logs will appear here -->
+                    </div>
+                </div>
+
+                <!-- Registered Faces -->
+                <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-semibold text-gray-200">👥 Registered Faces (<span id="userCount">0</span>)</h2>
+                        <button onclick="clearUsers()" class="text-xs text-red-400 hover:underline">Reset All Data</button>
+                    </div>
+                    <div class="grid grid-cols-3 sm:grid-cols-4 gap-3 max-h-48 overflow-y-auto p-1" id="registeredUsersList">
+                        <!-- Users will appear here -->
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- State Variables ---
+        let video = document.getElementById('webcam');
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let autoCheckInInterval = null;
+        let isProcessing = false;
+
+        // --- Initialization ---
+        window.onload = async () => {
+            // Load API Key
+            const savedKey = localStorage.getItem('gemini_api_key');
+            if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
+
+            // Load UI Data
+            renderRegisteredUsers();
+            renderAttendanceLogs();
+
+            // Start Webcam
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+                video.srcObject = stream;
+                updateStatus("Camera started. Ready!", "text-emerald-400");
+            } catch (err) {
+                updateStatus("Camera access denied! Please allow camera.", "text-red-400");
+                console.error(err);
+            }
+        };
+
+        // --- Helper Functions ---
+        function updateStatus(message, colorClass = "text-amber-300") {
+            const box = document.getElementById('statusBox');
+            box.className = `w-full bg-gray-700/50 p-3 rounded-lg text-center mb-6 text-sm border border-gray-600 font-medium ${colorClass}`;
+            box.innerText = message;
+        }
+
+        function saveApiKey() {
+            const key = document.getElementById('apiKeyInput').value.trim();
+            if (!key) return alert("Please enter a valid Gemini API Key!");
+            localStorage.setItem('gemini_api_key', key);
+            updateStatus("✅ API Key Saved Locally!", "text-emerald-400");
+        }
+
+        function captureFrameAsBase64() {
+            // Compress image to 400x300 for fast API upload & LocalStorage limit
+            canvas.width = 400;
+            canvas.height = 300;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            return {
+                fullDataUrl: dataUrl,
+                base64Data: dataUrl.split(',')[1] // Remove "data:image/jpeg;base64,"
+            };
+        }
+
+        // --- Step 1: Register Face ---
+        function registerFace() {
+            const nameInput = document.getElementById('userNameInput');
+            const name = nameInput.value.trim();
+            if (!name) return alert("Please enter a name first!");
+
+            const frame = captureFrameAsBase64();
+            let users = JSON.parse(localStorage.getItem('registered_users') || '[]');
+
+            // Check if already exists
+            if (users.some(u => u.name.toLowerCase() === name.toLowerCase())) {
+                return alert("User with this name already exists!");
+            }
+
+            users.push({
+                id: Date.now(),
+                name: name,
+                imageFull: frame.fullDataUrl,
+                imageBase64: frame.base64Data
+            });
+
+            localStorage.setItem('registered_users', JSON.stringify(users));
+            nameInput.value = '';
+            renderRegisteredUsers();
+            updateStatus(`✅ Face registered for ${name}!`, "text-emerald-400");
+        }
+
+        // --- Step 2: Check-in with Gemini API ---
+        async function checkInNow() {
+            if (isProcessing) return;
+
+            const apiKey = localStorage.getItem('gemini_api_key');
+            if (!apiKey) {
+                updateStatus("❌ Error: Please save Gemini API Key first!", "text-red-400");
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('registered_users') || '[]');
+            if (users.length === 0) {
+                updateStatus("⚠️ No registered faces found! Register someone first.", "text-amber-400");
+                return;
+            }
+
+            isProcessing = true;
+            document.getElementById('scanOverlay').classList.remove('hidden');
+            updateStatus("🔍 Gemini AI is matching face...", "text-blue-400");
+
+            try {
+                const liveFrame = captureFrameAsBase64();
+
+                // Prepare payload for Gemini 2.5 Flash
+                let parts = [
+                    { text: "You are a strict Face Recognition Attendance System. Below I am providing reference images of registered users along with their names, followed by a 'TARGET_LIVE_IMAGE'. Compare the face in the TARGET_LIVE_IMAGE with the registered users. If you find a clear match, reply ONLY with the exact name of that person. If no one matches, or if there is no clear face in the live image, reply ONLY with 'NO_MATCH'. Do not include any extra text or punctuation." }
+                ];
+
+                // Add registered users' images to prompt
+                users.forEach(u => {
+                    parts.push({ text: `Registered User Name: ${u.name}` });
+                    parts.push({ inline_data: { mime_type: "image/jpeg", data: u.imageBase64 } });
+                });
+
+                // Add Live Image
+                parts.push({ text: "TARGET_LIVE_IMAGE:" });
+                parts.push({ inline_data: { mime_type: "image/jpeg", data: liveFrame.base64Data } });
+
+                // Call Gemini API
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: parts }] })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    throw new Error(data.error.message);
+                }
+
+                const resultText = data.candidates[0].content.parts[0].text.trim();
+                
+                // Verify if returned name is in our list
+                const matchedUser = users.find(u => u.name.toLowerCase() === resultText.toLowerCase());
+
+                if (matchedUser) {
+                    markAttendance(matchedUser.name);
+                } else {
+                    updateStatus("❌ Face not recognized (No Match).", "text-red-400");
+                }
+
+            } catch (error) {
+                console.error(error);
+                updateStatus(`❌ API Error: ${error.message}`, "text-red-400");
+                if(autoCheckInInterval) toggleAutoCheckIn(); // Stop auto on error
+            } finally {
+                isProcessing = false;
+                document.getElementById('scanOverlay').classList.add('hidden');
+            }
+        }
+
+        // --- Attendance Logging ---
+        function markAttendance(name) {
+            let logs = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
+            const now = new Date();
+            
+            // Optional: Prevent duplicate check-in within 1 minute
+            const recentLog = logs.find(l => l.name === name && (now - new Date(l.timestamp)) < 60000);
+            if (recentLog) {
+                updateStatus(`ℹ️ ${name} is already checked in recently!`, "text-emerald-300");
+                return;
+            }
+
+            logs.unshift({
+                name: name,
+                time: now.toLocaleTimeString(),
+                date: now.toLocaleDateString(),
+                timestamp: now.toISOString()
+            });
+
+            localStorage.setItem('attendance_logs', JSON.stringify(logs));
+            renderAttendanceLogs();
+            updateStatus(`🎉 Welcome, ${name}! Check-in Successful!`, "text-emerald-400");
+        }
+
+        // --- Auto Live Check-in Toggle ---
+        function toggleAutoCheckIn() {
+            const btn = document.getElementById('autoCheckInBtn');
+            const videoContainer = document.getElementById('videoContainer');
+
+            if (autoCheckInInterval) {
+                clearInterval(autoCheckInInterval);
+                autoCheckInInterval = null;
+                btn.innerText = "🔄 Start Auto Live Check-in";
+                btn.classList.replace('bg-red-600', 'bg-gray-700');
+                btn.classList.replace('hover:bg-red-500', 'hover:bg-gray-600');
+                videoContainer.classList.remove('scanning');
+                updateStatus("Auto Check-in stopped.", "text-gray-400");
+            } else {
+                const apiKey = localStorage.getItem('gemini_api_key');
+                if (!apiKey) return alert("Please save Gemini API Key first!");
+                
+                checkInNow(); // Run immediately once
+                autoCheckInInterval = setInterval(checkInNow, 8000); // Then every 8 seconds
+                
+                btn.innerText = "⏹️ Stop Auto Check-in";
+                btn.classList.replace('bg-gray-700', 'bg-red-600');
+                btn.classList.replace('hover:bg-gray-600', 'hover:bg-red-500');
+                videoContainer.classList.add('scanning');
+            }
+        }
+
+        // --- UI Rendering ---
+        function renderRegisteredUsers() {
+            const users = JSON.parse(localStorage.getItem('registered_users') || '[]');
+            document.getElementById('userCount').innerText = users.length;
+            const container = document.getElementById('registeredUsersList');
+            
+            if (users.length === 0) {
+                container.innerHTML = `<p class="col-span-full text-sm text-gray-500 text-center py-4">No faces registered yet.</p>`;
+                return;
+            }
+
+            container.innerHTML = users.map(u => `
+                <div class="bg-gray-700 p-2 rounded-lg text-center border border-gray-600">
+                    <img src="${u.imageFull}" class="w-full h-16 object-cover rounded mb-1"/>
+                    <p class="text-xs font-medium truncate" title="${u.name}">${u.name}</p>
+                </div>
+            `).join('');
+        }
+
+        function renderAttendanceLogs() {
+            const logs = JSON.parse(localStorage.getItem('attendance_logs') || '[]');
+            const container = document.getElementById('attendanceList');
+
+            if (logs.length === 0) {
+                container.innerHTML = `<p class="text-sm text-gray-500 text-center py-8">No attendance marked yet.</p>`;
+                return;
+            }
+
+            container.innerHTML = logs.map(l => `
+                <div class="bg-gray-700/60 px-4 py-2.5 rounded-lg flex justify-between items-center border-l-4 border-emerald-500">
+                    <div>
+                        <p class="font-semibold text-sm text-white">${l.name}</p>
+                        <p class="text-xs text-gray-400">${l.date}</p>
+                    </div>
+                    <span class="bg-emerald-500/20 text-emerald-300 text-xs px-2.5 py-1 rounded-full font-mono">
+                        ${l.time}
+                    </span>
+                </div>
+            `).join('');
+        }
+
+        // --- Clear Data Functions ---
+        function clearLogs() {
+            if(confirm("Clear all attendance logs?")) {
+                localStorage.removeItem('attendance_logs');
+                renderAttendanceLogs();
+            }
+        }
+
+        function clearUsers() {
+            if(confirm("Delete all registered faces?")) {
+                localStorage.removeItem('registered_users');
+                renderRegisteredUsers();
+            }
+        }
+    </script>
+</body>
+</html>
